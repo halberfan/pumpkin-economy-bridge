@@ -106,13 +106,112 @@ Only one provider can be registered at a time. A second one gets
 
 ## Protocol
 
-Everything is JSON over Pumpkin's plugin IPC, so you can also implement it
-without this library. See [`economy-api/src/lib.rs`](economy-api/src/lib.rs) for the
-message types.
+Everything is UTF-8 JSON sent with Pumpkin's `send-ipc-message` and received in
+`handle-ipc-message`. You don't need the Rust library, so plugins in other
+languages (Python, JavaScript, Go, ...) can use the bridge or be a provider too.
+The types are defined in [`economy-api/src/lib.rs`](economy-api/src/lib.rs).
 
-- Consumers and providers send a `BridgeMessage` to the plugin `economy_bridge`.
-- The bridge sends an `EconomyRequest` to the provider.
-- Every reply is a `Result<EconomyResponse, EconomyError>`.
+### Conventions
+
+- **Accounts** are player UUID strings in the standard hyphenated form, e.g.
+  `"069a79f4-44e9-4726-a5be-fca90e38aaf5"`.
+- **Amounts** are integers in the currency's smallest unit. `5000` is 50.00
+  with two decimals. Never send floats.
+- **Enums** use serde's default externally tagged format:
+  - a variant without data is a plain string: `"RegisterProvider"`
+  - a variant with fields is an object with one key: `{"Balance": {"account": "..."}}`
+  - a variant with one value is an object with one key: `{"Amount": 5000}`
+- **Results** are `{"Ok": <value>}` or `{"Err": <error>}`.
+
+### Flow
+
+```text
+consumer  --BridgeMessage-->  economy_bridge  --EconomyRequest-->  provider
+          <--Result---------                  <--Result---------
+```
+
+| Who sends   | To               | Message          | Reply                                     |
+| ----------- | ---------------- | ---------------- | ----------------------------------------- |
+| Consumer    | `economy_bridge` | `BridgeMessage`  | `Result<EconomyResponse, EconomyError>`   |
+| Provider    | `economy_bridge` | `BridgeMessage`  | `Result<EconomyResponse, EconomyError>`   |
+| Bridge      | provider         | `EconomyRequest` | `Result<EconomyResponse, EconomyError>`   |
+
+### `BridgeMessage` (sent to `economy_bridge`)
+
+| Message                         | Meaning                                                        | Ok reply |
+| ------------------------------- | -------------------------------------------------------------- | -------- |
+| `"RegisterProvider"`            | Registers the sending plugin as the economy provider.          | `"Done"` |
+| `"UnregisterProvider"`          | Removes the sending plugin as provider (ignored otherwise).    | `"Done"` |
+| `{"Call": <EconomyRequest>}`    | Forwards the request to the provider and returns its reply.    | depends on the request |
+
+The bridge identifies the provider by the IPC sender, so a plugin can only
+register itself.
+
+### `EconomyRequest` (inside `Call`, and sent by the bridge to the provider)
+
+| Request                                                        | Ok reply                |
+| -------------------------------------------------------------- | ----------------------- |
+| `{"Balance": {"account": "<uuid>"}}`                           | `{"Amount": <balance>}` |
+| `{"Has": {"account": "<uuid>", "amount": 5000}}`               | `{"Bool": true}`        |
+| `{"Deposit": {"account": "<uuid>", "amount": 5000}}`           | `{"Amount": <new balance>}` |
+| `{"Withdraw": {"account": "<uuid>", "amount": 5000}}`          | `{"Amount": <new balance>}` |
+| `{"Transfer": {"from": "<uuid>", "to": "<uuid>", "amount": 5000}}` | `"Done"`            |
+| `{"Format": {"amount": 5000}}`                                 | `{"Text": "50.00 Coins"}` |
+| `"ProviderName"`                                               | `{"Text": "simple_economy"}` |
+
+Providers must reject `Deposit`, `Withdraw` and `Transfer` with an amount of
+zero or less with `"InvalidAmount"`. Unknown accounts should be created on first
+use.
+
+### `EconomyResponse`
+
+| Value              | Used for                                  |
+| ------------------ | ----------------------------------------- |
+| `{"Amount": 5000}` | `Balance`, `Deposit`, `Withdraw`          |
+| `{"Bool": true}`   | `Has`                                     |
+| `{"Text": "..."}`  | `Format`, `ProviderName`                  |
+| `"Done"`           | `Transfer`, `RegisterProvider`, `UnregisterProvider` |
+
+### `EconomyError`
+
+| Value                                         | Meaning                                         |
+| --------------------------------------------- | ----------------------------------------------- |
+| `"NoProvider"`                                | No economy plugin is registered.                |
+| `{"ProviderAlreadyRegistered": "<plugin>"}`   | Another plugin is already the provider.         |
+| `{"InsufficientFunds": {"balance": 1200}}`    | Not enough money; contains the current balance. |
+| `"InvalidAmount"`                             | Amount was zero or negative.                    |
+| `{"Transport": "<message>"}`                  | IPC failed or a message could not be decoded.   |
+| `{"Provider": "<message>"}`                   | Any other provider-specific failure.            |
+
+### Examples
+
+A shop withdraws 50.00 from a player:
+
+```json
+-> economy_bridge   {"Call": {"Withdraw": {"account": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "amount": 5000}}}
+<- economy_bridge   {"Ok": {"Amount": 4950}}
+```
+
+The player doesn't have enough money:
+
+```json
+<- economy_bridge   {"Err": {"InsufficientFunds": {"balance": 1200}}}
+```
+
+No economy plugin is installed:
+
+```json
+<- economy_bridge   {"Err": "NoProvider"}
+```
+
+### Notes for providers
+
+- Only answer requests whose IPC sender is `economy_bridge`.
+- Always reply with a JSON `Result`, also for errors like `InsufficientFunds`.
+  Use the IPC-level error string of `handle-ipc-message` only when the message
+  itself cannot be decoded.
+- Calls are synchronous. Don't hold a lock while calling the bridge, since the
+  call can come back into your plugin before it returns.
 
 ## Building
 
