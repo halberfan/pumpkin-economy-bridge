@@ -1,0 +1,6 @@
+[workspace]
+resolver = "3"
+members = ["economy-api", "economy-bridge"]
+
+[profile.release]
+lto = true

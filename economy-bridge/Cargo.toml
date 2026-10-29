@@ -1,0 +1,12 @@
+[package]
+name = "economy-bridge"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pumpkin-plugin-api = "0.2.1"
+economy-api = { path = "../economy-api" }
+tracing = "0.1"
