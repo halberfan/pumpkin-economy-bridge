@@ -61,6 +61,65 @@ Amounts are `i64` in the currency's smallest unit (e.g. cents), so `50_00` is
 Accounts are identified by the player's UUID string, which `account_of` gives
 you.
 
+## Using money from Python
+
+Pumpkin plugins are WebAssembly components, so you can write them in Python
+with [componentize-py](https://github.com/bytecodealliance/componentize-py).
+There is no Python SDK, so you talk to the bridge with plain JSON (see
+[Protocol](#protocol)).
+
+The full example is in [`examples/python/app.py`](examples/python/app.py). It
+adds `/pymoney`, which shows the player's balance. The part that talks to the
+bridge:
+
+```python
+import json
+from componentize_py_types import Err
+from wit_world.imports import ipc
+
+def bridge_call(request):
+    """Sends an EconomyRequest through the bridge and returns the Ok value."""
+    message = json.dumps({"Call": request}).encode()
+    try:
+        reply = ipc.send_ipc_message("economy_bridge", message)
+    except Err:
+        raise EconomyError({"Transport": "economy_bridge is not loaded"})
+    if isinstance(reply, Err):
+        raise EconomyError({"Transport": reply.value})
+
+    result = json.loads(reply.value)
+    if "Err" in result:
+        raise EconomyError(result["Err"])
+    return result["Ok"]
+
+amount = bridge_call({"Balance": {"account": account}})["Amount"]
+```
+
+Unlike the Rust API, Python has to implement every export of the Pumpkin
+plugin world itself (`handle_event`, `handle_task`, `handle_ai_goal_*`, ...),
+even if they do nothing. The example contains all of them.
+
+### Building
+
+1. Install componentize-py: `pip install componentize-py`
+2. Copy the `wit` folder of `pumpkin-plugin-api` **in the version your server
+   uses** (0.2.1 here) next to `app.py`. It's in the crate on crates.io and in
+   `crates/pumpkin-plugin-api/wit` in the Pumpkin repository.
+3. Build:
+
+   ```sh
+   componentize-py --wit-path wit --world plugin componentize app -o py_economy_example.wasm
+   ```
+
+4. Put `py_economy_example.wasm` into `plugins/` next to `economy_bridge.wasm`.
+
+To get autocompletion in your editor, generate the Python bindings with
+`componentize-py --wit-path wit --world plugin bindings bindings` and add
+`bindings` to your editor's Python path.
+
+The plugin is about 30 MB because it contains a Python interpreter, and it
+starts slower than a Rust plugin.
+
 ## Writing an economy plugin
 
 Implement `EconomyProvider`, register in `on_load` and pass IPC messages on:
